@@ -56,6 +56,7 @@ def lambda_handler(event, context):
 
     df = df.explode('processed_lines')  
     df.rename(columns={'processed_lines': 'city'}, inplace=True)
+    df['city'] = df['city'].str.replace(r'\(.*?\)', '', regex=True).str.strip()
     df.rename(columns={'extracted': 'datetime'}, inplace=True)
     df.drop(columns={'message_lines'}, inplace=True)
     
