@@ -40,7 +40,7 @@ Below is a visual representation of the project flow:
 - **Storage Size**: 20 GiB
 - **Provisioned IOPS**: 3000 IOPS
 - **Master Username**: `admin`
-- **Amazon Resource Name (ARN)**: `arn:aws:rds:us-east-1:971422709739:db:telegram-proj-mysql`
+- **Amazon Resource Name (ARN)**: `arn:aws:rds:us-709739:db:telegram-proj-mysql`
 - **Encryption**: Enabled with AWS KMS
 
 ### Security Groups
