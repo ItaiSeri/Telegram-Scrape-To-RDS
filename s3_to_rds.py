@@ -13,7 +13,7 @@ def extract_datetime(df):
     return df
 
 def lambda_handler(event, context):
-    json_file_url = os.environ.get('JSON_URL')  # Assuming this is the S3 key (path to the file)
+    json_file_url = os.environ.get('JSON_URL')  
     db_pass = os.environ.get('DB_PASSWORD')
 
     s3_client = boto3.client('s3')
@@ -34,8 +34,8 @@ def lambda_handler(event, context):
 
     df = extract_datetime(df)
 
-    df['message_lines'] = df['message'].apply(lambda x: x.split('\n'))
-    df['processed_lines'] = [[] for _ in range(len(df))]
+    df['message_lines'] = df['message'].apply(lambda x: x.split('\n')) #Create list based on \n
+    df['processed_lines'] = [[] for _ in range(len(df))] #New col with empty list
 
     for index, lines in df['message_lines'].items():
         start_processing = False  
@@ -49,10 +49,10 @@ def lambda_handler(event, context):
             if start_processing:
                 processed_lines.append(line)
             
-            if start_processing and not line.strip():
+            if start_processing and not line.strip(): #If line is blank line.strip() = 
                 break
 
-        df.at[index, 'processed_lines'] = processed_lines
+        df.at[index, 'processed_lines'] = processed_lines #Aasign a list to the column (doesn't work with .)
 
     df = df.explode('processed_lines')  
     df.rename(columns={'processed_lines': 'city'}, inplace=True)
