@@ -1,138 +1,71 @@
+# Telegram Alerts → AWS Serverless ETL → MySQL
 
-# Telegram Data Scraper with AWS Lambda
-
-## Project Overview
-This project demonstrates how to build a serverless application using AWS Lambda, S3, and RDS to scrape, process, and store messages from a Telegram channel. It leverages **Telethon** for scraping Telegram and **Pandas** for data transformation. The processed data is stored in an **RDS MySQL** database.
-
-## Project Architecture
-
-Below is a visual representation of the project flow:
+A serverless ETL pipeline that collects Israeli Home Front Command alert messages from their public Telegram channel (`PikudHaOref_all`), turns the free-text Hebrew messages into structured rows (event type, area, time, city), and loads them incrementally into Amazon RDS MySQL for analysis in QuickSight.
 
 ![Architecture Diagram](images/diagram.png)
 
+## How it works
 
-### Components:
-1. **Local Python Execution**: The project was initially run locally to set up and test Telegram scraping functionality.
-2. **1st Lambda Function - Telegram Scraper**: Scrapes messages from a Telegram channel and stores them as JSON in an S3 bucket.
-3. **2nd Lambda Function - S3 to RDS**: Processes the data from S3 using Pandas and inserts it into an RDS MySQL database.
+1. **Extract: Telegram scraper Lambda** ([`Telegram_Scraper.py`](Telegram_Scraper.py))
+   Connects to Telegram with Telethon, using a saved session string, reads the latest 80 messages from the channel, and writes them to S3 as `telegram_messages.json`.
+2. **Trigger:** a new JSON file in S3 triggers the second Lambda.
+3. **Transform: S3-to-RDS Lambda** ([`s3_to_rds.py`](s3_to_rds.py))
+   Uses Pandas to parse each unstructured Hebrew message:
+   - **event:** the alert type, the text before the `[` timestamp, cleaned to Hebrew characters
+   - **area:** the region that follows `אזור`
+   - **datetime:** extracted from the `[dd/mm/yyyy hh:mm]` block
+   - **city:** a single message lists many cities, so the list is split and exploded into **one row per city**
+4. **Load (incremental):** rows go into a staging table (`temp_telegram_data`, truncated on each run). Only rows newer than `MAX(datetime)` in the main table (`telegram_data`) are then inserted, so repeated runs don't create duplicates.
+5. **Analyze:** QuickSight connects to the MySQL database for dashboards.
 
-## Features
-- **Telegram Scraping**: Retrieves messages from a specified Telegram channel using Telethon.
-- **Serverless Architecture**: Both the scraping and data processing tasks are managed by AWS Lambda.
-- **Data Storage**: Raw data is saved as JSON in an S3 bucket, and the processed data is stored in an RDS MySQL database.
+[`telegram_string_session_topresent.py`](telegram_string_session_topresent.py) is a one-time helper that generates the Telegram session string the Lambda needs, so no interactive login happens inside Lambda.
 
-## Layers Used in Lambda Functions
+## Tech stack
 
-1. **AWSSDKPandas-Python312**: This layer includes the AWS SDK and Pandas for Python 3.12, used for data processing and interactions with AWS services (S3, RDS).
-   - ARN: `arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:13`
+AWS Lambda · Amazon S3 (event trigger) · Amazon RDS MySQL · Amazon QuickSight · Python · Pandas · Telethon · PyMySQL
 
-2. **PyMySQL Layer**: A custom Lambda layer that provides PyMySQL for interacting with the MySQL RDS instance.
-   - Packaged in the repository under `pymysql-layer/`.
+## Setup
 
-## RDS Configuration
+### AWS resources
+- An **S3 bucket** for the raw JSON, with an event notification that invokes the S3-to-RDS Lambda.
+- An **RDS MySQL** database with two tables, `telegram_data` and `temp_telegram_data`, each with the columns `message, event, area, datetime, city`.
+- Two **Lambda functions** (Python 3.12):
+  - The scraper needs `telethon`.
+  - The S3-to-RDS function uses the AWS-managed `AWSSDKPandas-Python312` layer (Pandas + boto3) and a custom layer with `pymysql`.
+  - The S3-to-RDS Lambda must be able to reach RDS, through VPC access and security-group rules.
 
-- **DB Instance ID**: `telegram-proj-mysql`
-- **Engine Version**: `MySQL 8.0.35`
-- **Instance Class**: `db.t4g.micro`
-- **vCPU**: 2
-- **RAM**: 1 GB
-- **Storage Type**: General Purpose SSD (gp3)
-- **Storage Size**: 20 GiB
-- **Provisioned IOPS**: 3000 IOPS
-- **Master Username**: `admin`
-- **Amazon Resource Name (ARN)**: `arn:aws:rds:us-709739:db:telegram-proj-mysql`
-- **Encryption**: Enabled with AWS KMS
+### Configuration
+Credentials are never stored in the code. They are set as Lambda environment variables:
 
-### Security Groups
+| Lambda | Variable | Purpose |
+|--------|----------|---------|
+| Scraper | `TELEGRAM_APP_API_ID`, `TELEGRAM_APP_API_HASH` | Telegram API app credentials (from my.telegram.org) |
+| Scraper | `TELEGRAM_STRING_SESSION` | Session string from the helper script |
+| Scraper | `S3_BUCKET_NAME` | Target bucket for the raw JSON |
+| S3-to-RDS | `DB_PASSWORD` | MySQL password |
 
-- **Security Group**: `rds-lambda-1`
-- **VPC Security Group**: `rds-lambda-1 (sg-020d5daa18e3096b4)`
-
-## Architecture Overview
-
-1. **Telegram Scraper Lambda (1st Lambda)**:
-   - Retrieves data from Telegram using the Telethon library.
-   - Stores scraped messages in JSON format in an S3 bucket.
-
-2. **S3 Storage**:
-   - Raw JSON files are stored in an S3 bucket for further processing.
-
-3. **S3 to RDS Lambda (2nd Lambda)**:
-   - Reads the JSON files from the S3 bucket.
-   - Cleans and transforms the data using Pandas.
-   - Inserts the processed data into an RDS MySQL database.
-
-## Prerequisites
-Before deploying this project, ensure you have the following:
-- **AWS Account** with access to:
-  - AWS Lambda
-  - S3
-  - RDS (MySQL)
-- **Python 3.x** installed locally
-- **AWS CLI** configured with necessary permissions
-- **Telethon**, **Pandas**, and **PyMySQL** libraries
-- **MySQL Database** running on AWS RDS
-
-## Project Setup
-
-### 1. Clone the Repository
+### Deploy
 ```bash
-git clone https://github.com/yourusername/telegram-data-scraper.git
-cd telegram-data-scraper
+pip install telethon -t package/ && cp Telegram_Scraper.py package/
+(cd package && zip -r ../telegram_scraper.zip .)
+aws lambda update-function-code --function-name telegram-scraper-lambda --zip-file fileb://telegram_scraper.zip
+
+zip s3_to_rds.zip s3_to_rds.py
+aws lambda update-function-code --function-name s3-to-rds-lambda --zip-file fileb://s3_to_rds.zip
 ```
 
-### 2. Install Python Dependencies
-Instead of using a virtual environment, install the necessary Python packages directly in your environment:
-```bash
-pip install -r requirements.txt
-```
+## Example output
 
-### 3. Configure AWS Services
-1. **S3 Bucket**: Create a new S3 bucket where the JSON files will be stored.
-2. **RDS MySQL Database**: Set up an RDS MySQL instance and note the connection details (host, username, password).
+One alert message becomes one row per city:
 
-### 4. Environment Variables
-Environment variables such as Telegram API keys, S3 bucket name, and RDS credentials are added manually in the Lambda function settings under the **Environment Variables** section of each Lambda function.
+| event | area | datetime | city |
+|-------|------|----------|------|
+| ירי רקטות וטילים | גליל עליון | 2024-09-24 10:30 | City A |
+| ירי רקטות וטילים | גליל עליון | 2024-09-24 10:30 | City B |
 
-### 5. Deploy the Lambda Functions
-Package and deploy both Lambda functions using the AWS CLI or the AWS Management Console.
+*(Illustrative values.)*
 
-```bash
-# For the Telegram Scraper Lambda
-zip -r lambda_function.zip .
-aws lambda update-function-code --function-name telegram-scraper-lambda --zip-file fileb://lambda_function.zip
-
-# For the S3 to RDS Lambda
-zip -r s3_to_rds_lambda.zip .
-aws lambda update-function-code --function-name s3-to-rds-lambda --zip-file fileb://s3_to_rds_lambda.zip
-```
-
-## Usage
-Once deployed, the project will operate as follows:
-1. **1st Lambda Function** scrapes data from Telegram and stores it in an S3 bucket.
-2. **2nd Lambda Function** retrieves the JSON files from S3, processes them with Pandas, and inserts the data into an RDS MySQL database.
-
-## Example Output
-Example of the processed data:
-| Message | Event  | Area  | Datetime          | City     |
-|---------|--------|-------|-------------------|----------|
-| Sample1 | Alert  | North | 24/09/2024 10:30AM | Haifa    |
-| Sample2 | Warning| South | 24/09/2024 12:00PM | Tel Aviv |
-
-## Dependencies
-Install the necessary Python libraries with:
-```bash
-pip install -r requirements.txt
-```
-
-Dependencies include:
-- **Telethon**: For interacting with Telegram API
-- **Pandas**: For data processing
-- **PyMySQL**: For MySQL database interaction
-- **boto3**: For AWS S3 operations
-
-## License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Contact
-For any inquiries or issues, reach out to: `your-email@example.com`.
+## Possible improvements
+- Move the database host, name and bucket into environment variables, as already done for the credentials.
+- Track the last processed Telegram message ID instead of re-reading the latest 80 messages.
+- Schedule the scraper with EventBridge for continuous collection.
